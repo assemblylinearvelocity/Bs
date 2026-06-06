@@ -1,6 +1,6 @@
 -- Game/Main/Legit/AC/emu.lua
--- BAC emulator. Must run before any other script yields.
--- Uses __namecall hook instead of hookfunction to avoid executor sandboxing.
+-- Passive BAC observer. Does NOT hook or intercept anything.
+-- BAC fires normally. We only read packets for research purposes.
 
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -9,10 +9,6 @@ local LocalPlayer       = Players.LocalPlayer
 local STATIC_SECRET = "PleaseDontFindThisSenorEhItDoesntReallyMatterTbhItsFineIfYouDo"
 local SALT          = "GuelpBAC"
 local PARAM         = 256
-
--- ───────────────────────────────────────────────
---  Packet helpers
--- ───────────────────────────────────────────────
 
 local function buildIdentity(plr, withParam)
     plr = plr or LocalPlayer
@@ -94,10 +90,6 @@ local function buildPacket(nonce, seq, digestBytes, trailerBytes)
     return table.concat(parts)
 end
 
--- ───────────────────────────────────────────────
---  Find BAC remote
--- ───────────────────────────────────────────────
-
 local function findRemote()
     for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
         if d.Name == "BAC" and d:IsA("RemoteEvent") then
@@ -106,104 +98,13 @@ local function findRemote()
     end
 end
 
-local BACRemote = findRemote()
-if not BACRemote then
-    -- Wait up to 10s for it to appear
-    local t0 = os.clock()
-    repeat task.wait(0.05) BACRemote = findRemote()
-    until BACRemote or (os.clock() - t0) > 10
-end
-
--- ───────────────────────────────────────────────
---  Capture genuine packets via __namecall hook
---  (avoids hookfunction sandboxing issues)
--- ───────────────────────────────────────────────
-
-local captured   = {}
-local origIndex  = nil
-local hookActive = false
-
-local function captureGenuine(timeout, want)
-    if not BACRemote then
-        return nil, "no BAC remote found"
-    end
-
-    captured   = {}
-    hookActive = true
-
-    -- Hook via __namecall on the metatable
-    local mt = getrawmetatable(game)
-    local old_namecall = mt.__namecall
-    setreadonly(mt, false)
-
-    mt.__namecall = newcclosure(function(self, ...)
-        local method = getnamecallmethod()
-        if method == "FireServer" and self == BACRemote then
-            local args = { ... }
-            if type(args[1]) == "string" and hookActive then
-                captured[#captured + 1] = args[1]
-            end
-        end
-        return old_namecall(self, ...)
-    end)
-
-    setreadonly(mt, true)
-
-    -- Wait for packets
-    local t0 = os.clock()
-    repeat task.wait(0.05)
-    until #captured >= (want or 1) or (os.clock() - t0) > (timeout or 8)
-
-    hookActive = false
-
-    -- Restore original namecall
-    setreadonly(mt, false)
-    mt.__namecall = old_namecall
-    setreadonly(mt, true)
-
-    return captured
-end
-
-local function sendPacket(packet)
-    if BACRemote then
-        BACRemote:FireServer(packet)
-        return true
-    end
-    return false
-end
-
--- ───────────────────────────────────────────────
---  Run capture on load
--- ───────────────────────────────────────────────
-
-local identity = buildIdentity(LocalPlayer, true)
-print("[BAC] identity:", identity)
-
-local packets = captureGenuine(8, 3)
-if packets and #packets > 0 then
-    for _, g in ipairs(packets) do
-        local p = decodePacket(g)
-        print("[BAC] packet:", toHex(p.raw))
-        print("[BAC]   nonce=" .. string.format("0x%04X", p.nonce)
-            .. " seq=" .. tostring(p.seq)
-            .. " digest(" .. #p.digest .. "B)=" .. toHex(p.digest))
-        local rebuilt = buildPacket(p.nonce, p.seq or 0, p.digest, (#p.trailer > 0) and p.trailer or nil)
-        print("[BAC]   round-trips:", toHex(unpackEscaped(rebuilt)) == toHex(p.raw))
-    end
-else
-    warn("[BAC] no genuine packets captured")
-end
-
--- ───────────────────────────────────────────────
---  Exports
--- ───────────────────────────────────────────────
-
+-- Expose for research use only. Does not hook anything.
 return {
     buildIdentity  = buildIdentity,
-    captureGenuine = captureGenuine,
     decodePacket   = decodePacket,
     buildPacket    = buildPacket,
-    sendPacket     = sendPacket,
     packBytes      = packBytes,
     unpackEscaped  = unpackEscaped,
+    toHex          = toHex,
+    findRemote     = findRemote,
 }
