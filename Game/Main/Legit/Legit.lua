@@ -1,8 +1,14 @@
 -- Game/Main/Legit/Legit.lua
--- Entry point for game-side logic. Loads all feature modules.
+-- Loads all game-side logic modules.
 
--- Load ESP / Visuals logic
-loadfile("Game/Main/Legit/Visuals.lua")()
+local raw = "https://raw.githubusercontent.com/assemblylinearvelocity/Bs/master/"
 
--- Load Skin Changer
-loadfile("Exploits/SkinChanger.lua")()
+local function load(path)
+    return loadstring(game:HttpGet(raw .. path))()
+end
+
+-- ESP / Visuals logic
+load("Game/Main/Legit/Visuals.lua")
+
+-- Skin Changer
+load("Exploits/SkinChanger.lua")
