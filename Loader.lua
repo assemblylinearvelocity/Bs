@@ -1,86 +1,51 @@
 -- Loader.lua
--- IMPORTANT: Hook BAC FireServer BEFORE any yields so we never miss packet 1.
+-- Installs __namecall hook on BAC immediately (no yields),
+-- then fetches all scripts in parallel and executes in order.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local raw = "https://raw.githubusercontent.com/assemblylinearvelocity/Bs/master/"
 
--- ── Step 1: Grab BAC remote instantly and install a passthrough hook ──────────
--- This runs synchronously before any HttpGet yields.
--- The hook is a no-op passthrough; emu.lua will upgrade it once loaded.
+-- ── Step 1: Install BAC __namecall intercept BEFORE any yield ────────────────
+-- This runs synchronously so we never miss packet #1.
+-- It's a pure pass-through — the emu will take over once loaded.
 
-local BACRemote = nil
-local EarlyQueue = {} -- packets captured before emu is ready
+local function installEarlyHook()
+    local ok, mt = pcall(getrawmetatable, game)
+    if not ok or not mt then return end
 
-local function findBAC()
-    for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
-        if d.Name == "BAC" and d:IsA("RemoteEvent") then
-            return d
-        end
-    end
-end
+    local old_namecall = rawget(mt, "__namecall")
+    if not old_namecall then return end
 
--- Try to find it immediately (it may already exist on join)
-BACRemote = findBAC()
-
-local function installEarlyHook(remote)
-    local fs = remote.FireServer
-    local original
-    original = hookfunction(fs, function(self, ...)
-        -- pass-through: do not interfere, just let it fire normally
-        return original(self, ...)
+    pcall(setreadonly, mt, false)
+    mt.__namecall = newcclosure(function(self, ...)
+        -- pure pass-through, touches nothing
+        return old_namecall(self, ...)
     end)
-    -- Store original so emu can use it
-    getgenv().__BAC_original_FireServer = original
-    getgenv().__BAC_remote = remote
+    pcall(setreadonly, mt, true)
+
+    -- stash so emu.lua can reference it
+    getgenv().__BAC_loader_namecall = old_namecall
 end
 
-if BACRemote then
-    installEarlyHook(BACRemote)
-else
-    -- Not ready yet — watch for it in background while we download
-    task.spawn(function()
-        local remote = ReplicatedStorage:WaitForChild("Remotes", 10)
-        if not remote then
-            -- try descendants
-            local t0 = os.clock()
-            repeat
-                task.wait()
-                BACRemote = findBAC()
-            until BACRemote or (os.clock() - t0) > 10
-        else
-            BACRemote = remote:WaitForChild("BAC", 10)
-        end
-        if BACRemote then
-            installEarlyHook(BACRemote)
-        end
-    end)
-end
+installEarlyHook()
 
--- ── Step 2: Download all scripts in parallel ──────────────────────────────────
+-- ── Step 2: Fetch all scripts in parallel ────────────────────────────────────
 
-local scripts = {
-    emu      = nil,
-    menu     = nil,
-    game     = nil,
-}
+local scripts = {}
 
--- Fetch all three simultaneously
-local threads = {
-    task.spawn(function() scripts.emu  = game:HttpGet(raw .. "Game/Main/Legit/AC/emu.lua") end),
-    task.spawn(function() scripts.menu = game:HttpGet(raw .. "Menu/Legit.lua") end),
-    task.spawn(function() scripts.game = game:HttpGet(raw .. "Game/Main/Legit/Legit.lua") end),
-}
+task.spawn(function() scripts.emu  = game:HttpGet(raw .. "Game/Main/Legit/AC/emu.lua")  end)
+task.spawn(function() scripts.menu = game:HttpGet(raw .. "Menu/Legit.lua")               end)
+task.spawn(function() scripts.game = game:HttpGet(raw .. "Game/Main/Legit/Legit.lua")    end)
 
--- Wait for all fetches to complete
 repeat task.wait() until scripts.emu and scripts.menu and scripts.game
 
--- ── Step 3: Execute in correct order ─────────────────────────────────────────
+-- ── Step 3: Execute in order ─────────────────────────────────────────────────
 
--- 1. Emulator — upgrades the early hook and starts monitoring
+-- 1. Emulator — sets up proper __namecall capture, reads packets
 loadstring(scripts.emu)()
 
--- 2. Menu — UI (depends on Library)
+-- 2. Menu — UI (needs Library)
 loadstring(scripts.menu)()
 
--- 3. Game logic — ESP, SkinChanger (depends on Library + emu)
+-- 3. Game logic — ESP + SkinChanger (needs Library + emu)
 loadstring(scripts.game)()
